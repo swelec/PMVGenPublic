@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  pmvgen:
+    build: .
+    container_name: pmvgen
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Moscow
+      # Пример переменных окружения для секретов:
+      # TELEGRAM_BOT_TOKEN: "123:ABC"
+      # ALLOWED_USER_ID: "785786744"
+    volumes:
+      - ./docker-data/private_settings.py:/app/private_settings.py:ro
+      - ./docker-data/pmv_bot.db:/app/pmv_bot.db
+      - ./docker-data/output:/app/output
+      - ./docker-data/logs:/app/logs
+      - ./docker-data/tmp:/app/tmp
+      - ./docker-data/music_projects:/app/music_projects
+      - ./docker-data/Music:/app/Music
