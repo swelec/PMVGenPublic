@@ -8,6 +8,8 @@ ALLOWED_USER_ID = 123456789
 
 NETWORK_OUTPUT_ROOT = r"\\server\share\output"
 
+ENABLE_NETWORK_COPY = False
+
 NAS_SSH_HOST = "192.168.0.10"
 NAS_SSH_PORT = 22
 NAS_SSH_USER = "username"

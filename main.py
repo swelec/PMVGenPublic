@@ -4266,6 +4266,13 @@ def move_output_to_network_storage(local_path: Path, date_folder: Optional[str] 
     if not resolved.exists():
         raise FileNotFoundError(f"Итоговый файл не найден: {resolved}")
 
+    if not ENABLE_NETWORK_COPY:
+        comment = (
+            f"network_copy=disabled;original_path={resolved};"
+            f"timestamp={datetime.now().isoformat(timespec='seconds')}"
+        )
+        return resolved, comment
+
     if not date_folder:
         date_folder = date.today().isoformat()
     target_dir = NETWORK_OUTPUT_ROOT / date_folder
