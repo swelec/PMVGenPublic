@@ -202,9 +202,10 @@ def _locate_bin(name: str) -> str:
 DB_PATH = SCRIPT_DIR / "pmv_bot.db"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 _network_output_root_value = _get_private_setting("NETWORK_OUTPUT_ROOT")
-ENABLE_NETWORK_COPY = False
+_enable_network_copy_value = _get_private_setting("ENABLE_NETWORK_COPY")
+ENABLE_NETWORK_COPY = _coerce_bool(_enable_network_copy_value, False)
 NETWORK_OUTPUT_ROOT = (
-    Path(_network_output_root_value)
+    Path(str(_network_output_root_value))
     if _network_output_root_value
     else OUTPUT_DIR
 )
