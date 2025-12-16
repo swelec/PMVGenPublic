@@ -57,6 +57,24 @@ def _coerce_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """
+    ????????? ???????? ???????? ? bool, ??????????? ?????? ???? true/false, 1/0 ? ?.?.
+    """
+    if value in (_PRIVATE_SETTING_SENTINEL, None):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n"}:
+        return False
+    return default
+
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -184,6 +202,7 @@ def _locate_bin(name: str) -> str:
 DB_PATH = SCRIPT_DIR / "pmv_bot.db"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 _network_output_root_value = _get_private_setting("NETWORK_OUTPUT_ROOT")
+ENABLE_NETWORK_COPY = False
 NETWORK_OUTPUT_ROOT = (
     Path(_network_output_root_value)
     if _network_output_root_value
