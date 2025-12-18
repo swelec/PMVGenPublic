@@ -301,6 +301,7 @@ RANDOMPMV_MAX_SOURCES_PER_MINUTE = 5.0
 RANDOMPMV_FULL_RATIO_MINUTES = 10.0
 RANDOMPMV_NEW_SOURCE_CHOICES = [5, 10, 15, 20, 30, 40, 50, 60]
 BADCLIP_MAX_MATCHES = 10
+AUTO_MUSICPREP_SEGMENT_RANGE = (0.8, 1.4)
 
 # =========================
 # Telegram доступ
@@ -1125,6 +1126,93 @@ async def finalize_musicprep_project(
     )
 
 
+
+def _random_musicprep_segment_length(default_value: float) -> float:
+    low, high = AUTO_MUSICPREP_SEGMENT_RANGE
+    try:
+        low_val = float(low)
+    except Exception:
+        low_val = max(0.5, default_value * 0.7)
+    try:
+        high_val = float(high)
+    except Exception:
+        high_val = max(low_val + 0.1, default_value * 1.3)
+    if high_val <= low_val:
+        high_val = max(low_val + 0.1, default_value if default_value > 0 else 1.0)
+    return round(random.uniform(low_val, high_val), 2)
+
+
+def _auto_musicprep_project_name(mp3_path: Path) -> str:
+    base = re.sub(r"\s+", " ", mp3_path.stem.strip()) or "Music Project"
+    if len(base) > 64:
+        base = base[:64].rstrip()
+    suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rand = random.randint(100, 999)
+    return f"{base} {suffix}_{rand}"
+
+
+def auto_create_random_music_project(
+    used_music_paths: Optional[Set[str]] = None,
+) -> Dict[str, Any]:
+    music_files = list_music_input_files()
+    if not music_files:
+        raise RuntimeError("Music folder is empty. Add MP3/FLAC/WAV tracks before running.")
+
+    normalized_used = {p for p in (used_music_paths or set())}
+    available = [p for p in music_files if _normalize_path_str(p) not in normalized_used]
+    if not available:
+        available = music_files
+    mp3_path = random.choice(available)
+
+    mod = load_music_generator_module()
+    default_segment = getattr(mod, "DEFAULT_TARGET_SEGMENT", 1.0)
+    modes = getattr(mod, "SEGMENT_MODES", ("beat",))
+    segment_len = _random_musicprep_segment_length(float(default_segment or 1.0))
+    mode = random.choice(list(modes) or ["beat"])
+    analysis_kwargs = {}
+    options = get_musicprep_sensitivity_options(mode)
+    if options:
+        selected = random.choice(options)
+        analysis_kwargs = dict(selected.get("analysis_kwargs") or {})
+
+    project_name = _auto_musicprep_project_name(mp3_path)
+    manifest = mod.create_music_project(
+        mp3_path=mp3_path,
+        name=project_name,
+        target_segment=segment_len,
+        segment_mode=mode,
+        analysis_kwargs=analysis_kwargs,
+    )
+    manifest_data = manifest.to_dict()
+    analysis_obj = getattr(manifest, "analysis", None)
+    segments = list(getattr(analysis_obj, "segments", []) or [])
+    segments_count = len(segments)
+    duration = None
+    if segments:
+        try:
+            duration = float(segments[-1].end)
+        except Exception:
+            duration = None
+
+    audio_path = Path(manifest.audio_path)
+    project_dir = audio_path.parent
+    manifest_path = project_dir / "manifest.json"
+    info = {
+        "slug": manifest.slug,
+        "name": manifest.name,
+        "dir": project_dir,
+        "manifest_path": manifest_path,
+        "audio_path": audio_path if audio_path.exists() else None,
+        "segments_count": segments_count,
+        "duration": duration,
+        "manifest_data": manifest_data,
+        "usage_count": 0,
+        "last_used": None,
+    }
+    if used_music_paths is not None:
+        used_music_paths.add(_normalize_path_str(mp3_path))
+    return info
+
 def build_musicprepcheck_keyboard(projects: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     buttons: List[List[InlineKeyboardButton]] = []
     sorted_projects = sorted(
@@ -1569,18 +1657,48 @@ async def run_newcompmusic_generation(
     await send_fn("\n".join(msg_lines))
 
 
+def _project_slug_key(project: Dict[str, Any]) -> str:
+    slug = (project.get("slug") or project.get("name") or f"project-{id(project)}").strip()
+    return slug.lower()
+
+
 def _prepare_randompmv_session(
     used_group_keys: Optional[Set[Tuple[str, str]]] = None,
     min_new_sources: int = 0,
+    forced_projects: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
-    projects = load_music_projects()
-    if not projects:
+    raw_projects: List[Dict[str, Any]] = []
+    if forced_projects:
+        raw_projects.extend(forced_projects)
+    raw_projects.extend(load_music_projects())
+
+    if not raw_projects:
         raise RuntimeError("Не найдено проектов в music_projects.")
 
-    unused_projects = [p for p in projects if not p.get("usage_count")]
-    unused_ids = {id(p) for p in unused_projects}
-    other_projects = [p for p in projects if id(p) not in unused_ids]
-    project_candidates = unused_projects + other_projects
+    seen_slugs: Set[str] = set()
+    deduped: List[Dict[str, Any]] = []
+    for proj in raw_projects:
+        key = _project_slug_key(proj)
+        if key in seen_slugs:
+            continue
+        seen_slugs.add(key)
+        deduped.append(proj)
+
+    forced_slugs = {_project_slug_key(p) for p in (forced_projects or [])}
+    forced_list: List[Dict[str, Any]] = []
+    unused_projects: List[Dict[str, Any]] = []
+    other_projects: List[Dict[str, Any]] = []
+    for proj in deduped:
+        slug_key = _project_slug_key(proj)
+        usage = int(proj.get("usage_count") or 0)
+        if slug_key in forced_slugs:
+            forced_list.append(proj)
+        elif usage <= 0:
+            unused_projects.append(proj)
+        else:
+            other_projects.append(proj)
+
+    project_candidates = forced_list + unused_projects + other_projects
 
     groups_raw = get_source_groups_prefer_unused()
     if not groups_raw:
@@ -1805,9 +1923,28 @@ async def run_randompmv_batch(
     total = max(RANDOMPMV_MIN_BATCH, min(int(total_runs), RANDOMPMV_MAX_BATCH))
     created = 0
     used_groups: Set[Tuple[str, str]] = set()
+    used_music_paths: Set[str] = set()
+    auto_musicprep_disabled = False
     for idx in range(1, total + 1):
+        forced_projects: Optional[List[Dict[str, Any]]] = None
+        if not auto_musicprep_disabled:
+            try:
+                forced_project = auto_create_random_music_project(used_music_paths)
+            except Exception as auto_exc:
+                auto_musicprep_disabled = True
+                await send_fn(
+                    f"⚠️ Не удалось автоматически подготовить новый music project: {auto_exc}. "
+                    "Попробую использовать уже готовые проекты."
+                )
+            else:
+                forced_projects = [forced_project]
+
         try:
-            session, algo_key, meta = _prepare_randompmv_session(used_groups, min_new_sources=min_new_sources)
+            session, algo_key, meta = _prepare_randompmv_session(
+                used_groups,
+                min_new_sources=min_new_sources,
+                forced_projects=forced_projects,
+            )
         except Exception as exc:
             log_randompmv_event(
                 {
