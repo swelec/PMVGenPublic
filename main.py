@@ -299,7 +299,7 @@ RANDOMPMV_SOURCES_PER_MINUTE = 5.0  # базовое значение по ум�
 RANDOMPMV_MIN_SOURCES_PER_MINUTE = 2.0
 RANDOMPMV_MAX_SOURCES_PER_MINUTE = 5.0
 RANDOMPMV_FULL_RATIO_MINUTES = 10.0
-RANDOMPMV_NEW_SOURCE_CHOICES = [5, 10, 15, 20, 30, 40, 50, 60]
+RANDOMPMV_NEW_SOURCE_CHOICES = [0, 5, 10, 15, 20, 30, 40, 50, 60]
 BADCLIP_MAX_MATCHES = 10
 AUTO_MUSICPREP_SEGMENT_RANGE = (0.8, 1.4)
 
@@ -1492,6 +1492,15 @@ def build_randompmv_count_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def build_randompmv_orientation_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(label, callback_data=f"randompmv_orient:{label}")
+        for label in NEWCOMPMUSIC_ORIENTATION_CHOICES
+    ]
+    buttons.append(InlineKeyboardButton("ВСЕ", callback_data="randompmv_orient:ALL"))
+    return InlineKeyboardMarkup([buttons])
+
+
 def build_randompmv_newcount_keyboard() -> InlineKeyboardMarkup:
     buttons: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
@@ -1666,6 +1675,7 @@ def _prepare_randompmv_session(
     used_group_keys: Optional[Set[Tuple[str, str]]] = None,
     min_new_sources: int = 0,
     forced_projects: Optional[List[Dict[str, Any]]] = None,
+    orientation_preference: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
     raw_projects: List[Dict[str, Any]] = []
     if forced_projects:
@@ -1722,6 +1732,7 @@ def _prepare_randompmv_session(
                 orientation_map,
                 require_target=True,
                 min_new_sources=min_new_sources,
+                orientation_preference=orientation_preference,
             )
         except Exception as exc:
             last_error = exc
@@ -1741,6 +1752,7 @@ def _prepare_randompmv_session(
                 orientation_map,
                 require_target=False,
                 min_new_sources=min_new_sources,
+                orientation_preference=orientation_preference,
             )
         except Exception as exc:
             last_error = exc
@@ -1760,6 +1772,7 @@ def _prepare_randompmv_from_project(
     orientation_map: Dict[Tuple[str, str], str],
     require_target: bool,
     min_new_sources: int = 0,
+    orientation_preference: Optional[str] = None,
 ) -> Optional[Tuple[Dict[str, Any], str, Dict[str, Any]]]:
     manifest_data = project.get("manifest_data")
     manifest_path = project.get("manifest_path")
@@ -1782,8 +1795,12 @@ def _prepare_randompmv_from_project(
     target_sources, target_ratio = _randompmv_compute_target_sources(duration_minutes)
     required_total_sources = max(target_sources, max(0, min_new_sources))
 
-    orientation_cycle = list(NEWCOMPMUSIC_ORIENTATION_CHOICES)
-    random.shuffle(orientation_cycle)
+    orientation_choice = (orientation_preference or "").upper()
+    if orientation_choice in NEWCOMPMUSIC_ORIENTATION_CHOICES:
+        orientation_cycle = [orientation_choice]
+    else:
+        orientation_cycle = list(NEWCOMPMUSIC_ORIENTATION_CHOICES)
+        random.shuffle(orientation_cycle)
 
     def pick_group(
         forbid_used: bool,
@@ -1798,7 +1815,7 @@ def _prepare_randompmv_from_project(
             for key, rows, unused in shuffled:
                 if forbid_used and used_group_keys and key in used_group_keys:
                     continue
-                color_rows = _filter_green_new_rows(rows)
+                color_rows = list(rows)
                 if not color_rows:
                     continue
                 new_available = sum(1 for row in color_rows if _is_unused_source_row(row))
@@ -1829,18 +1846,17 @@ def _prepare_randompmv_from_project(
     if not chosen:
         if require_target:
             return None
-        raise RuntimeError("Не удалось подобрать группу с зелёными исходниками.")
+        raise RuntimeError("Не удалось подобрать группу с исходниками.")
 
     key, rows, unused_count, color_rows, chosen_orientation = chosen
     if not color_rows:
-        raise RuntimeError("Выбранная группа не содержит исходников с нужными тегами.")
+        raise RuntimeError("Выбранная группа не содержит исходников.")
     group_idx = next(
         (idx for idx, (group_key, _, _) in enumerate(prepared_groups, 1) if group_key == key),
         None,
     )
     orientation_label = (orientation_map.get(key) or _resolution_orientation(key[1] or "")[0]).upper()
-    green_emoji = RATEGRP_COLOR_CHOICES["green"]["emoji"]
-    color_label = f"{green_emoji}+🆕"
+    color_label = "ВСЕ"
 
     new_sources_available = sum(1 for row in color_rows if _is_unused_source_row(row))
     if min_new_sources > 0 and new_sources_available < min_new_sources:
@@ -1851,14 +1867,7 @@ def _prepare_randompmv_from_project(
     if sources_count <= 0:
         raise RuntimeError("Недостаточно исходников для генерации.")
 
-    autotag_ids: List[int] = []
-    for row in color_rows:
-        if _rategrp_row_color(row) is None:
-            try:
-                autotag_ids.append(int(row["id"]))
-            except Exception:
-                continue
-    autotag = {"emoji": green_emoji, "ids": autotag_ids} if autotag_ids else None
+    autotag = None
 
     algo_key = random.choice(list(CLIP_SEQUENCE_ALGORITHMS.keys()))
 
@@ -1919,6 +1928,7 @@ async def run_randompmv_batch(
     user_id: int,
     total_runs: int,
     min_new_sources: int = 0,
+    orientation_preference: Optional[str] = None,
 ) -> None:
     total = max(RANDOMPMV_MIN_BATCH, min(int(total_runs), RANDOMPMV_MAX_BATCH))
     created = 0
@@ -1944,6 +1954,7 @@ async def run_randompmv_batch(
                 used_groups,
                 min_new_sources=min_new_sources,
                 forced_projects=forced_projects,
+                orientation_preference=orientation_preference,
             )
         except Exception as exc:
             log_randompmv_event(
@@ -6027,6 +6038,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     }:
         return await reply_long("Используйте кнопки под сообщением или запустите команду заново.")
 
+    if state == "randompmv_choose_orientation":
+        choice = text.strip().upper()
+        if choice == "ВСЕ" or choice == "ALL":
+            orientation_choice = None
+        elif choice in NEWCOMPMUSIC_ORIENTATION_CHOICES:
+            orientation_choice = choice
+        else:
+            return await reply_long("Выберите ориентацию: VR, HOR, VER или ВСЕ.")
+        sess["randompmv_orientation_preference"] = orientation_choice
+        sess["state"] = "randompmv_wait_count"
+        user_sessions[user_id] = sess
+        label = choice if choice != "ALL" else "ВСЕ"
+        await update.message.reply_text(
+            f"Ориентация выбрана: {label}. Теперь выберите количество генераций.",
+            reply_markup=build_randompmv_count_keyboard(),
+        )
+        return
+
     if state == "randompmv_wait_count":
         sess = sess or {}
         try:
@@ -6040,7 +6069,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sess["state"] = "randompmv_wait_newcount"
         user_sessions[user_id] = sess
         await update.message.reply_text(
-            "Сколько новых исходников обязательно должно быть в PMV?",
+            "Сколько новых исходников обязательно должно быть в PMV? (0 = любые)",
             reply_markup=build_randompmv_newcount_keyboard(),
         )
         return
@@ -6061,7 +6090,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(
             f"Запускаю {total_runs} Random PMV (новых ≥ {min_new})..."
         )
-        return await run_randompmv_batch(reply_long, user_id, total_runs, min_new)
+        orientation_pref = sess.get("randompmv_orientation_preference")
+        return await run_randompmv_batch(reply_long, user_id, total_runs, min_new, orientation_pref)
 
 
     if state in {"find_wait_term", "find_wait_choice"}:
@@ -7041,6 +7071,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(text)
         return
 
+    if data.startswith("randompmv_orient:"):
+        if not sess or sess.get("state") != "randompmv_choose_orientation":
+            return await query.answer("Сначала запустите CreateRandomPMV", show_alert=True)
+        choice = data.split(":", 1)[1].upper()
+        if choice == "ALL":
+            orientation_choice = None
+            label = "ВСЕ"
+        elif choice in NEWCOMPMUSIC_ORIENTATION_CHOICES:
+            orientation_choice = choice
+            label = choice
+        else:
+            return await query.answer("Не понял ориентацию", show_alert=True)
+        sess["randompmv_orientation_preference"] = orientation_choice
+        sess["state"] = "randompmv_wait_count"
+        user_sessions[user_id] = sess
+        await query.answer(f"Ориентация: {label}")
+        await query.message.reply_text(
+            f"Ориентация выбрана: {label}. Теперь выберите количество генераций.",
+            reply_markup=build_randompmv_count_keyboard(),
+        )
+        return
+
     if data.startswith("randompmv_count:"):
         if not sess or sess.get("state") != "randompmv_wait_count":
             return await query.answer("Нет активной сессии CreateRandomPMV", show_alert=True)
@@ -7054,7 +7106,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_sessions[user_id] = sess
         await query.answer("Количество запусков сохранено")
         await query.message.reply_text(
-            "Сколько новых исходников обязательно включать в каждый PMV?",
+            "Сколько новых исходников обязательно включать в каждый PMV? (0 = любые)",
             reply_markup=build_randompmv_newcount_keyboard(),
         )
         return
@@ -7081,7 +7133,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(
             f"Запускаю {total_runs} Random PMV (новых ≥ {min_new})..."
         )
-        return await run_randompmv_batch(send_from_query, user_id, total_runs, min_new)
+        orientation_pref = sess.get("randompmv_orientation_preference")
+        return await run_randompmv_batch(send_from_query, user_id, total_runs, min_new, orientation_pref)
 
     if data.startswith("find_pick:"):
         if not sess.get("find_mode"):
@@ -8110,14 +8163,15 @@ async def cmd_randompmv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return await unauthorized(update)
 
     user_sessions[update.effective_user.id] = {
-        "state": "randompmv_wait_count",
+        "state": "randompmv_choose_orientation",
     }
     msg = (
-        "CreateRandomPMV: выбери, сколько проектов сгенерировать (5–30), "
-        "а затем задай минимум новых источников (0–60) для каждого PMV. "
+        "CreateRandomPMV: сначала выбери ориентацию исходников (VR / HOR / VER / ВСЕ), "
+        "затем укажи, сколько проектов сгенерировать (5-30), "
+        "а после задай минимум новых источников (0-60) для каждого PMV. "
         "Бот автоматически подберёт группы и алгоритмы под эти требования."
     )
-    await update.message.reply_text(msg, reply_markup=build_randompmv_count_keyboard())
+    await update.message.reply_text(msg, reply_markup=build_randompmv_orientation_keyboard())
 
 
 async def cmd_rategrp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
